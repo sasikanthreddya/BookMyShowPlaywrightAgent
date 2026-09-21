@@ -1,0 +1,32 @@
+{
+  "name": "bookmyshowagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BookMyShowAgent - Playwright BDD (Cucumber/Gherkin via playwright-bdd) UI automation for BookMyShow, one service (Movies, Events, ...) per POM + step-definition pair, driven from flows/*.md user-flow files.",
+  "scripts": {
+    "bddgen": "npx bddgen",
+    "flows:check": "node scripts/check-flow-drift.mjs",
+    "flows:bless": "node scripts/check-flow-drift.mjs --write",
+    "test": "npm run flows:check && npx bddgen && npx playwright test",
+    "test:headed": "npx bddgen && npx playwright test --headed",
+    "test:list": "npx bddgen && npx playwright test --list --reporter=null",
+    "test:smoke": "npx bddgen && npx playwright test --grep @smoke",
+    "test:movies": "npx bddgen && npx playwright test --grep @movies",
+    "test:events": "npx bddgen && npx playwright test --grep @events",
+    "test:plays": "npx bddgen && npx playwright test --grep @plays",
+    "test:activities": "npx bddgen && npx playwright test --grep @activities",
+    "test:sports": "npx bddgen && npx playwright test --grep @sports",
+    "test:stream": "npx bddgen && npx playwright test --grep @stream",
+    "auth:capture": "npx playwright test --project=setup",
+    "auth:refresh": "node -e \"require('fs').rmSync('.auth/user.json',{force:true})\" && npx playwright test --project=setup",
+    "test:account": "npx bddgen && npx playwright test --project=account",
+    "report": "npx playwright show-report reports/html"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.1.2",
+    "playwright-bdd": "^9.2.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y", "--offline", "@playwright/mcp@0.0.79",
+        "--timeout-action", "15000"
+      ]
+    }
+  }
+}

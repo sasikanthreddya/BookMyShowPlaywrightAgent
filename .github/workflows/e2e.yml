@@ -1,0 +1,112 @@
+name: E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  schedule:
+    # Nightly full run, 01:30 UTC (07:00 IST) - before the Indian daytime
+    # traffic peak, and the listings have rolled over by then.
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      grep:
+        description: "Tag filter, e.g. @movies or @events"
+        required: false
+        default: ""
+
+# A live-site suite: never let two runs drive BookMyShow at once from the same
+# branch, or they multiply the bot-detection exposure described in README.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Cheap, browserless, and catches the failure mode the suite cannot: a
+  # feature that has silently fallen behind its flow. Runs first and alone.
+  flows:
+    name: Flow drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: npm run flows:check
+
+  smoke:
+    name: Smoke (anonymous)
+    needs: flows
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+
+      # `channel: "chrome"` needs REAL Chrome, not the bundled Chromium:
+      # measured, bundled Chromium is blocked by Cloudflare even headed.
+      - run: npx playwright install --with-deps chrome
+
+      - run: npx bddgen
+
+      # xvfb-run, because the suite MUST run headed. Cloudflare blocks
+      # headless outright (see the matrix in README), so a CI runner needs a
+      # virtual display rather than `headless: true`. BMS_HEADLESS is left
+      # unset on purpose - setting it to 1 reproduces the block deliberately.
+      - name: Run @smoke
+        run: xvfb-run -a npx playwright test --project=anonymous --grep @smoke
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-report
+          path: |
+            reports/
+            test-results/
+          retention-days: 7
+
+  full:
+    name: Full suite
+    needs: flows
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chrome
+      - run: npx bddgen
+
+      # The "setup" project signs in and writes .auth/user.json, which the
+      # "account" project consumes. Without these secrets the @account
+      # scenarios fail with instructions rather than passing hollowly; drop
+      # `--project=account` below if the repo has no credentials to give.
+      - name: Run everything
+        env:
+          BMS_GOOGLE_EMAIL: ${{ secrets.BMS_GOOGLE_EMAIL }}
+          BMS_GOOGLE_PASSWORD: ${{ secrets.BMS_GOOGLE_PASSWORD }}
+          # A CI runner is a fresh machine every time, so there is never a
+          # session to reuse; 0 makes that explicit instead of relying on the
+          # 12h default never matching.
+          BMS_AUTH_MAX_AGE_HOURS: "0"
+          # Nobody is watching a CI browser, so do not sit waiting for a human
+          # to finish a 2FA challenge - fail fast and report it instead.
+          BMS_AUTH_WAIT_MINUTES: "0"
+        run: xvfb-run -a npx playwright test ${{ inputs.grep && format('--grep {0}', inputs.grep) || '' }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-report
+          path: |
+            reports/
+            test-results/
+          retention-days: 14

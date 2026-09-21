@@ -1,0 +1,29 @@
+{
+  // ---------------------------------------------------------------
+  // Step-definition discovery for *.feature files.
+  //
+  // Steps live in src/services/<service>/<service>.steps.ts AND in
+  // src/support/common.steps.ts (shared Background steps), NOT next
+  // to the .feature files, so both Cucumber extensions must be told
+  // where to look -- their defaults only scan features/**.
+  // ---------------------------------------------------------------
+
+  // cucumberopen.cucumber-official
+  "cucumber.features": [
+    "features/*.feature"
+  ],
+  "cucumber.glue": [
+    "src/**/*.steps.ts"
+  ],
+
+  // alexkrechik.cucumberautocomplete
+  "cucumberautocomplete.steps": [
+    "src/**/*.steps.ts"
+  ],
+  "cucumberautocomplete.syncfeatures": "features/*.feature",
+  "cucumberautocomplete.strictGherkinCompletion": false,
+  "cucumberautocomplete.smartSnippets": true,
+  "cucumberautocomplete.stepsInvariants": true,
+
+  "files.eol": "\n"
+}

@@ -1,0 +1,623 @@
+================================================================================
+BookMyShowAgent - PROJECT GENERATION PROMPT  (rev 2)
+Paste everything below into Claude Code (or a similar coding agent) from an
+EMPTY folder to generate this project from scratch.
+================================================================================
+
+NOTE FOR THE TEAM: you do not need to read this file day to day. The short rules
+everyone follows are in TEAM-GUIDE.md (5-minute read). This file is the detailed
+reference for the coding agent and for anyone debugging a specific trap.
+
+You are a Playwright automation expert. Build a UI automation framework for the
+booking platform BookMyShow (https://in.bookmyshow.com).
+
+--------------------------------------------------------------------------------
+1. ARCHITECTURE - NON-NEGOTIABLE
+--------------------------------------------------------------------------------
+
+Treat every BookMyShow module as a SERVICE: Movies, Stream, Events, Plays,
+Sports, Activities. Each service owns exactly ONE Page Object and ONE step
+definition file. All tests are BDD/Cucumber Gherkin, executed through
+`playwright-bdd` (NOT @cucumber/cucumber, NOT codegen-style raw specs).
+
+Stack:
+  - TypeScript, ESM ("type": "module" in package.json)
+  - @playwright/test  ^1.61.1
+  - playwright-bdd    ^9.2.0
+  - @types/node, typescript
+  - No other runtime dependencies.
+
+Directory layout to create:
+
+  flows/<service>.md                          user flow in markdown (SOURCE OF TRUTH)
+  features/<service>.feature                  Gherkin, written from that flow
+  src/support/base.page.ts                    cross-service behaviour (landing, city gate, nav tabs)
+  src/support/common.steps.ts                 steps shared by EVERY service
+  src/support/fixtures.ts                     the single custom `test`; one POM fixture per service
+  src/services/<service>/<service>.page.ts    service POM, extends BasePage
+  src/services/<service>/<service>.steps.ts   service step definitions
+  scripts/check-flow-drift.mjs                fails the build when a feature lags its flow
+  .claude/commands/update-feature.md          slash command: regenerate a feature from its flow
+  reports/screenshots/                        execution evidence
+  playwright.config.ts
+  tsconfig.json
+  package.json
+  .mcp.json
+  .vscode/settings.json
+  .gitignore
+  README.md
+
+A feature file must be NAMED AFTER ITS FLOW (`flows/X.md` <-> `features/X.feature`);
+that pairing is what the drift check in section 9 uses.
+
+Rules that must hold for every service:
+  - Anything cross-service (city gate, bot-check handling, opening a nav tab) lives
+    in `BasePage`, never duplicated in a service POM.
+  - Steps shared by every service live in `src/support/common.steps.ts` and take the
+    `basePage` fixture, so no service depends on another service's steps file.
+  - Step definitions stay DECLARATIVE. No locators, no waits, no direct page calls -
+    only POM method calls. All browser detail belongs in the POM.
+  - Every steps file imports `test` from `src/support/fixtures.ts`, so all services
+    share ONE step registry.
+  - Tag each feature `@<service>`; keep `@smoke` on ONE cheap happy path per service.
+
+Build TWO services in this first pass: Movies and Stream. Stream exists from the
+start deliberately - it is what forces the shared-step and shared-POM boundaries to
+be real rather than theoretical.
+
+--------------------------------------------------------------------------------
+2. FLOW FILES DRIVE EVERYTHING
+--------------------------------------------------------------------------------
+
+A user flow is authored as markdown in `flows/`. It starts with a `Service Type:`
+line. It is either a single numbered list (one scenario) or SCENARIO-AWARE.
+
+Create `flows/movies.md` exactly:
+
+    Service Type: Movie
+
+    ## Background
+    1) Navigate to BookMyShow
+    2) Select Hyderabad as city if not selected
+    3) Click on Movies tab
+
+    ## Scenario: Filter the listing by language  [smoke]
+    1) Select Telugu language
+    2) Movies listing is displayed with the Telugu filter applied
+    3) Selected city remains Hyderabad
+
+    ## Scenario: Book the first movie in a language  [booking]
+    1) Select <language> language
+    2) Click on which ever shows first comes
+    3) Click on Book tickets
+    4) If popup comes, select the first available format for <language>
+    5) Showtimes page for <language> is reached
+
+    Examples:
+    | language  |
+    | Telugu    |
+    | Tamil     |
+    | Malayalam |
+
+Create `flows/stream.md` exactly:
+
+    Service Type: Stream
+
+    1) Navigate to BookMyShow
+    2) Select Hyderabad as city if not selected
+    3) Click on Stream tab
+    4) Scroll down till find out "Best of Tom Cruise Movies"
+    5) Once find out section User can click on which ever shows fisrt comes
+
+(Keep the typos - the flow is the user's own words, and the hash guard in section 9
+tracks it byte-for-byte.)
+
+TRANSLATION RULES, flow -> Gherkin:
+
+  | In the flow                | In Gherkin                          |
+  | `## Background`            | `Background:`                       |
+  | `## Scenario: X  [tag]`    | `Scenario:` plus `@tag`             |
+  | `Examples:` table          | `Scenario Outline:` plus `Examples:`|
+  | `<placeholder>`            | an Examples column                  |
+
+  - Everything shared by every scenario goes in `Background` so it is written once.
+  - Prefer ONE outline with N rows over N near-identical scenarios.
+  - A PLACEHOLDER USED IN MORE THAN ONE STEP MUST STAY ONE COLUMN. That is how the
+    flow says "the language I filtered by is the language I pick in the popup".
+    Never hard-code a value in one step while parameterising it in another - it is a
+    silent contradiction the moment the table changes. (Real bug in this very flow:
+    the popup step read "select Telugu 2D" regardless of the language filtered by.)
+  - Keep `@smoke` on one cheap happy path, NOT on an outline with many rows. Funnel
+    and long-tail scenarios go behind their own tag (`@booking`).
+  - Prefer "whatever the page offers first" over pinning a value when the underlying
+    data rotates. Adding a language should then be a TABLE ROW AND NOTHING ELSE - in
+    this project, Tamil and Malayalam needed no new step definitions and no new POM
+    code.
+
+Before writing any code, produce an explicit mapping table PER SCENARIO (flow step ->
+Gherkin step(s), or MISSING) and show it to the user. Do not trust step counts: one
+flow step routinely maps to several Gherkin steps, and with a Background plus several
+scenarios the totals are meaningless.
+
+Conditional flow steps ("if not selected", "if popup comes") must be implemented as
+real conditionals in the POM - never an unconditional click, and never a bare
+`waitForTimeout` standing in for a condition.
+
+COST OF SCENARIOS: `Background` re-runs for EVERY scenario AND every Examples row, so
+each row is a full live journey (~20s), and `workers: 1` means nothing parallelises
+(raising it would multiply bot-detection exposure). Budget scenarios accordingly.
+
+--------------------------------------------------------------------------------
+3. GROUND EVERY SELECTOR AGAINST THE LIVE PAGE - DO NOT GUESS
+--------------------------------------------------------------------------------
+
+Use the Playwright MCP tools to open the real site and read the real DOM before
+writing any locator. Configure MCP in `.mcp.json`:
+
+    {
+      "mcpServers": {
+        "playwright": {
+          "command": "npx",
+          "args": ["-y", "--offline", "@playwright/mcp@0.0.79",
+                   "--timeout-action", "15000"]
+        }
+      }
+    }
+
+BookMyShow renders hashed styled-components class names (e.g. `sc-7o7nez-0 fPrTaH`)
+that change between deploys. NEVER use class selectors. Prefer, in order: ARIA roles,
+exact visible text, URL assertions.
+
+TWO RULES THAT COST REAL DEBUGGING TIME HERE:
+
+  (a) NEVER assert presence with `await locator.count()`. It reads the DOM once and
+      does not retry, so against lazily-rendered / client-hydrated content it reports
+      whatever existed at that instant and produces FALSE GREENS. Use web-first
+      assertions (`await expect(locator.first()).toBeVisible()`), which retry. The one
+      legitimate exception is a `count()` inside a scroll loop where THE LOOP IS THE
+      RETRY (see Stream, section 7).
+
+  (b) VERIFY THE OUTCOME OF AN ACTION, NOT THAT THE ACTION WAS DISPATCHED. This bit
+      three separate times in this project: a click that hydration swallowed, a
+      city-picker branch that silently did nothing, and a listing assertion satisfied
+      by footer links.
+
+Prove state changes from the URL wherever possible - it is the only stable signal:
+  - city selected   -> /explore/home/hyderabad
+  - movies tab      -> /explore/movies-hyderabad?cat=MT
+  - stream tab      -> /explore/c/stream?cat=Online Streaming Events
+  - language filter -> /explore/movies-hyderabad?languages=telugu
+  - movie details   -> /movies/<city>/<slug>/ET<digits>
+  - format selected -> /movies/.../buytickets/ET<digits>/<yyyymmdd>?...&language=telugu
+
+--------------------------------------------------------------------------------
+4. CLOUDFLARE - RUNS MUST BE HEADED
+--------------------------------------------------------------------------------
+
+BookMyShow sits behind Cloudflare. Measured one variable at a time:
+
+  | Browser                              | Mode     | Result                 |
+  | bundled Chromium                     | headless | blocked                |
+  | real Chrome (channel: "chrome")      | headless | blocked                |
+  | real Chrome (channel: "chrome")      | HEADED   | HTTP 200, genuine page |
+  | real Chrome + persistent profile dir | headed   | blocked                |
+
+Headless is the single setting that decides it, and Playwright defaults it to `true`,
+so `playwright.config.ts` must set it EXPLICITLY:
+
+    channel: "chrome",
+    headless: process.env.BMS_HEADLESS === "1",
+    launchOptions: { args: ["--disable-blink-features=AutomationControlled"] },
+
+Do not wire in a persistent user-data-dir - a reused profile gets flagged and is
+blocked even headed. A visible Chrome window during a run is expected, not a bug.
+`BMS_HEADLESS=1` exists only to deliberately reproduce the blocked state.
+
+Cloudflare has TWO responses needing OPPOSITE handling. Implement both on `BasePage`:
+  - TRANSIENT: a page headed "Performing security verification" / "Just a moment" /
+    "Checking your browser". A JS challenge that clears itself after a few seconds
+    (roughly one run in five). `settleThroughBotCheck()` waits it out. Failing on
+    sight is wrong - but so is ignoring it, because every later locator is missing
+    while it is up (otherwise it surfaces as a confusing 30s timeout inside the city
+    step, blaming the city picker for a page that was never BookMyShow).
+  - TERMINAL: a page headed "Sorry, you have been blocked" / "Attention Required".
+    Never clears. `assertNotBlocked()` must throw IMMEDIATELY with a message saying
+    this is an environment/bot-detection failure, not a broken assertion, and naming
+    the known-good combination to check. Never "fix" a block by changing a selector.
+
+--------------------------------------------------------------------------------
+5. BasePage - THE CROSS-SERVICE SURFACE
+--------------------------------------------------------------------------------
+
+`BasePage` owns: `open(path)`, `settleThroughBotCheck()`, `assertNotBlocked()`,
+`ensureCity(city)`, `assertCity(city)`, `serviceTab(name)`, `openServiceTab(name)`.
+
+CITY GATE. BookMyShow gates every service behind a city choice. The landing state
+VARIES per run and all of these are normal:
+  a) geo-redirect straight to /explore/home/<city>  -> already set, do nothing
+  b) the city bottom sheet is open (container id `#bottomSheet-model-close`, lists
+     "Popular Cities" with each city as an exact-text node) -> pick from it
+  c) the header reads "Select your region" -> open the picker, then pick
+
+Both the sheet and the header hydrate client-side, so `ensureCity()` must WAIT for
+one of those states (`expect(sheetOption.or(regionControl).first()).toBeVisible()`)
+rather than read `count()` once. A one-shot count that finds neither silently does
+nothing and returns as if it succeeded, leaving the wrong city set. If neither state
+arrives, throw naming the city and the current URL. When picking from the header,
+take the first VISIBLE exact match - the page renders hidden duplicate city nodes.
+
+After a city is chosen the header renders a button whose accessible name is the city,
+and the URL contains it - use either to detect "already active".
+
+OPENING A SERVICE TAB is shared because every service has one, but the landing URL
+differs per service (Movies -> /explore/movies-<city>, Stream -> /explore/c/stream).
+So `openServiceTab(service)` only waits for the URL to CHANGE from what it was, then
+for `domcontentloaded`, and leaves the landing assertion to the service's own step.
+`serviceTab()` must take `.first()`: the footer carries a second link with the same
+accessible name ("Stream" appears in both nav and footer).
+
+--------------------------------------------------------------------------------
+6. MOVIES SERVICE
+--------------------------------------------------------------------------------
+
+features/movies.feature (note the Background and the Scenario Outline):
+
+  @movies
+  Feature: Movies service - browse and book movies by language in Hyderabad
+
+    Background:
+      Given the user is on the BookMyShow home page
+      And the city is set to "Hyderabad"
+      And the user opens the "Movies" tab
+
+    @smoke
+    Scenario: Filter the Hyderabad movies listing by Telugu language
+      When the user filters by the "Telugu" language
+      Then the movies listing is displayed
+      And the "Telugu" language filter is applied
+      And the selected city remains "Hyderabad"
+
+    @booking
+    Scenario Outline: Book the first <language> movie in its first available format
+      When the user filters by the "<language>" language
+      And the user opens the first movie in the listing
+      Then the movie details page is displayed
+      And the "Book tickets" button is available
+      When the user starts booking tickets
+      And the user selects the first available format for "<language>" if prompted
+      Then the language and format popup is no longer shown
+      And the showtimes page for "<language>" is reached
+
+      Examples:
+        | language  |
+        | Telugu    |
+        | Tamil     |
+        | Malayalam |
+
+MOVIES SELECTOR FACTS AND TRAPS (verify each yourself, then encode the handling):
+
+  - LANGUAGE FILTER: the sidebar renders TWO nodes per language (sidebar plus a
+    collapsed filter panel); one is hidden. An xpath anchored on the "Languages"
+    heading resolves to the hidden one. "Telugu" also appears in the footer. Target
+    the first VISIBLE exact-text match. (They are in fact `button` elements with an
+    aria-pressed state, so a role-based locator does exist - but it hits the same
+    hidden-duplicate trap, so it must still be visibility-filtered.)
+    Success is asserted from the URL: `?languages=telugu`.
+
+  - LISTING CARDS VS FOOTER LINKS: a real listing card href carries the city segment
+    (`/movies/hyderabad/<slug>/ET00442702`); the footer's "Movies Now Showing" links
+    do not (`/movies/<slug>-telugu/ET00514261`). A bare `a[href*="/movies/"]` matches
+    both - 28 hits where only 16 were real cards - so "the first movie" could resolve
+    to a footer link, and "the listing is displayed" could pass before a single real
+    card rendered. Scope `movieCards` to the active city taken from the URL.
+
+  - "WHICHEVER SHOWS FIRST COMES": take the FIRST card in DOM order. Do NOT pin a
+    movie title - the listing changes daily.
+
+  - THE FORMAT POPUP has no dialog role and no stable id; its heading
+    ("Select language and format") is its only stable identity. "Telugu 2D" is NOT
+    one element: the popup is a list with one `listitem` per language, the row text
+    being the language and the formats being buttons inside the row
+    (Tamil -> "2D"; Telugu -> "2D", "EPIQ", "HDR By Barco", "Select all"). A bare
+    button named "2D" is ambiguous, and the page body separately contains LINKS named
+    "2D", "IMAX 2D", "DOLBY CINEMA 2D". Scope the format button to the language's
+    listitem.
+
+  - PICK THE FIRST AVAILABLE FORMAT, not a named one. Format availability is
+    per-movie AND per-language, and the scenario opens a different movie every day,
+    so a hard-coded "EPIQ" is a coin flip. Implement `firstFormatIn(language)` =
+    first button in the language's listitem, EXCLUDING "Select all" (a bulk control
+    in the same row, not a format - selecting it would choose every format at once).
+
+  - THE POPUP IS CONDITIONAL: single-format titles go straight past it. Treat its
+    absence as "not prompted", not a failure - via a bounded `waitFor`, NOT a
+    one-shot `count()` (it is rendered client-side after the click, so it would not
+    be there yet).
+
+  - TWO TRAPS BETWEEN "Book tickets" AND THE POPUP - both must be handled inside
+    `startBooking()`:
+      1. THE DETAILS PAGE HYDRATES AFTER IT RENDERS. "Book tickets" is visible,
+         enabled and stable before React attaches its click handler, so a click
+         landing in that window is swallowed SILENTLY and Playwright's actionability
+         checks cannot detect it. It surfaced as a `/buytickets/` assertion failing
+         several steps later, blaming the wrong thing entirely.
+      2. A-RATED TITLES OPEN AN AGE GATE FIRST, not the format popup: a bottom sheet
+         reading 'This movie is rated "A" and is only for viewers above 18...' with a
+         single "Continue" button. UA16+ titles skip it - which is why Telugu and
+         Tamil never hit it and only the Malayalam row failed.
+    So `startBooking()` clicks, then waits for one of THREE real outcomes -
+    navigation to /buytickets/, the format popup, or the age gate (click Continue and
+    keep waiting) - and only retries the click when NO sheet is open. That last
+    condition matters: BookMyShow reuses `id="bottomSheet-model-close"` for EVERY
+    bottom sheet (city picker, age gate, format popup) and the overlay intercepts
+    pointer events, so a blind retry does not fail fast - the click retries until the
+    120s test timeout. Bound the retries and throw a message that says a sheet this
+    POM does not yet know how to dismiss may be open.
+
+--------------------------------------------------------------------------------
+7. STREAM SERVICE
+--------------------------------------------------------------------------------
+
+features/stream.feature:
+
+  @stream
+  Feature: Stream service - browse curated movie collections
+
+    @smoke
+    Scenario: Open the first title in the Best of Tom Cruise Movies collection
+      Given the user is on the BookMyShow home page
+      And the city is set to "Hyderabad"
+      When the user opens the "Stream" tab
+      And the user scrolls to the "Best of Tom Cruise Movies" collection
+      Then the "Best of Tom Cruise Movies" collection is displayed
+      When the user opens the first title in the "Best of Tom Cruise Movies" collection
+      Then the title details page is displayed
+
+Curated collections are the STREAM page's own content - the Events page holds only
+live events, so this flow belongs to Stream, not Events. Establish that before
+writing the POM.
+
+STREAM SELECTOR FACTS AND TRAPS:
+
+  - THE PAGE BUILDS ITSELF AS YOU SCROLL. It is ~8000px tall and collections below
+    the fold are NOT IN THE DOM at all, so a locator for one cannot simply be waited
+    on - nothing arrives without scrolling. And `mouse.wheel()` does not drive its
+    lazy loader (verified: the heading never appeared); `page.evaluate(() =>
+    window.scrollBy(0, 1200))` finds "Best of Tom Cruise Movies" in ~5 steps.
+    `scrollToCollection()` scrolls in a bounded loop, so the one-shot `count()`
+    inside that loop is deliberate - THE LOOP IS THE RETRY. After the heading
+    appears, `scrollIntoViewIfNeeded()` and then wait for the first card, which
+    hydrates a beat later. If the whole page scrolls without finding it, throw a
+    message saying these carousels are curated and may have been retired.
+
+  - A COLLECTION HEADING is an `<h2>`; match it with `exact: true`, NOT an
+    interpolated RegExp - collection names contain regex metacharacters
+    ("Resident Evil (2002)", "Mission: Impossible") that would break or silently
+    misbehave.
+
+  - ANCHORING A CAROUSEL WITH NO ID, ROLE OR STABLE CLASS: find the INNERMOST `div`
+    that contains BOTH the collection's heading AND at least one card link -
+    `page.locator("div").filter({ has: heading }).filter({ has: cardLink }).last()`.
+    Filtering on what the container must CONTAIN survives markup changes; walking a
+    fixed number of parent elements does not. Verify it resolves to the collection's
+    own carousel (13 cards for Tom Cruise) and not to the whole page.
+
+  - STREAM CARD HREFS HAVE NO CITY SEGMENT - `/movies/top-gun-maverick/ET00076943`,
+    not the `/movies/hyderabad/...` shape the Movies listing uses. The city segment
+    DOES appear once a city cookie is set, so neither shape can be relied on: match a
+    city-agnostic `/movies/.+/ET<digits>`. Beware reading hrefs from a browser that
+    has already been around the site - a warm session reports the city-prefixed form
+    and will mislead you.
+
+  - "WHICHEVER SHOWS FIRST COMES": first card in DOM order, no pinned title. Capture
+    the card's text before clicking, and afterwards assert BOTH the URL shape AND
+    (when the text was readable) that the landed page's heading is that title - which
+    is what proves the FIRST card was opened rather than merely that some title page
+    loaded.
+
+--------------------------------------------------------------------------------
+8. ONE SHARED STEP REGISTRY
+--------------------------------------------------------------------------------
+
+`src/support/fixtures.ts` exports the single custom `test`. It MUST extend
+playwright-bdd's `test`, not @playwright/test's - `createBdd()` rejects the latter
+with "createBdd() should use 'test' extended from playwright-bdd". Fixtures: one POM
+per service PLUS `basePage` for the cross-service steps. All wrap the same `page`, so
+a scenario can freely mix `basePage` navigation steps with a service POM's steps.
+Adding a service means adding its POM here and nothing else.
+
+Because all services share one registry, two services defining the same step text
+fails `bddgen` with "Multiple definitions matched scenario step." This is not
+hypothetical - Stream's flow opens with the same two steps as Movies. Put those in
+`src/support/common.steps.ts`, backed by `BasePage` and taking the `basePage`
+fixture, so no service depends on another service's steps file:
+
+    Given the user is on the BookMyShow home page
+    And the city is set to "Hyderabad"
+    When the user opens the "Stream" tab        # parameterised: Movies, Events, ...
+    Then the selected city remains "Hyderabad"
+
+Because `common.steps.ts` sits OUTSIDE `src/services/**`, the `steps` glob in
+`playwright.config.ts` must be `src/**/*.steps.ts`. NARROWING IT BACK WOULD SILENTLY
+STOP LOADING THAT FILE - its steps would come out "undefined" with nothing pointing
+at the glob. Put a comment in the config saying so.
+
+When two services genuinely need DIFFERENT behaviour behind the same wording,
+tag-scope instead of hoisting:
+
+    Given("the listing is displayed", { tags: "@movies" }, async ({ moviesPage }) => {...});
+    Given("the listing is displayed", { tags: "@stream" }, async ({ streamPage }) => {...});
+
+--------------------------------------------------------------------------------
+9. FLOW -> FEATURE DRIFT GUARD
+--------------------------------------------------------------------------------
+
+Nothing compiles `flows/*.md` into Gherkin - that is a human/agent step.
+`npx bddgen` only does the second hop:
+
+    flows/movies.md          --(no tool; run /update-feature)--> features/movies.feature
+    features/movies.feature  --(npx bddgen)-->  .features-gen/movies.feature.spec.js
+
+So a feature can silently fall behind its flow while the suite still passes: a green
+run over incomplete coverage, which is worse than a red one. Build two guards.
+
+(a) `scripts/check-flow-drift.mjs` - plain Node ESM, no dependencies:
+    - For each `flows/<s>.md`, compute SHA-256 of its content with CRLF normalised to
+      LF and trailing whitespace trimmed (content hashing, NOT mtimes - a git
+      checkout rewrites mtimes and would raise false alarms).
+    - `features/<s>.feature` records that hash on line 1 as:
+        # flow-sha: <64 hex>  (flows/<s>.md - regenerate with /update-feature <s>)
+    - Exit 1 on: MISSING feature, UNTRACKED feature (no flow-sha line), or DRIFT
+      (hash mismatch). Each problem prints the fix command.
+    - Report features with no originating flow as a note, not a failure.
+    - Also print the flow's numbered-step count and the feature's Gherkin-step count
+      as CONTEXT ONLY. Step counts are deliberately NOT the pass/fail signal - one
+      flow step maps to several Gherkin steps, and a Background plus several
+      scenarios makes the totals meaningless.
+    - `--write` re-records the hashes ("bless").
+    - On failure, print a banner making clear that a green test run does not mean the
+      flows are covered.
+
+(b) `.claude/commands/update-feature.md` - a slash command (`/update-feature
+    <service>`, argument optional = sweep every flow) that regenerates a feature from
+    its flow and adds the step definitions and POM methods the new steps need.
+    Procedure:
+      1. run the drift check to see what is out of sync
+      2. read the flow and the feature; build the mapping table PER SCENARIO and show
+         it to the user BEFORE editing
+      3. for each MISSING step: Gherkin in the feature, declarative step def in
+         `src/services/<s>/<s>.steps.ts`, browser detail as a POM method; if the
+         behaviour is cross-service put it on `BasePage` + `common.steps.ts` and
+         register any new POM in `fixtures.ts`
+      4. run `npm run test:smoke` (or `--grep @<service>`) until green
+      5. `npm run flows:bless`, then re-run the drift check to confirm clean
+      6. report what changed and what was deliberately not automated
+    The command file must also restate: the FLOW FILE FORMAT rules from section 2
+    (Background / Scenario / Examples / one-column placeholders / prefer
+    "first available" over pinned values / @smoke on one cheap path), never guess a
+    selector, runs must be headed, guard conditional steps, one POM + one steps file
+    per service, the step-text collision rule, the `src/**/*.steps.ts` glob warning,
+    and the booking-funnel stop-and-ask rule below.
+
+Only bless a feature that genuinely covers the whole flow - a blessed feature asserts
+exactly that, so blessing a partial one hides the very gap the check exists to find.
+
+--------------------------------------------------------------------------------
+10. BOOKING FUNNEL BOUNDARY - HARD STOP
+--------------------------------------------------------------------------------
+
+This drives the LIVE PRODUCTION site. The suite stops at selecting a language and
+format. It must NOT choose a cinema, a showtime or a seat, and must never reach
+payment - those steps can hold real inventory.
+
+Proof that the format selection worked comes from the URL (`/buytickets/` plus
+`language=<lang>`), not from the showtimes UI - which is exactly why nothing further
+needs to be clicked.
+
+If any future flow step enters the booking funnel past format selection, do not
+automate it: stop, ask the user where to stop, and state plainly in your report which
+steps you left out and why.
+
+--------------------------------------------------------------------------------
+11. CONFIG FILES
+--------------------------------------------------------------------------------
+
+playwright.config.ts:
+  - `defineBddConfig({ features: "features/*.feature",
+                       steps: ["src/**/*.steps.ts", "src/support/fixtures.ts"] })`
+    (globs resolve relative to the config file's directory; fixtures.ts is listed
+    because it exports the custom `test` the step files import; `src/**` not
+    `src/services/**` - see section 8, and say so in a comment)
+  - timeout 120_000, expect.timeout 20_000, retries 0, workers 1
+  - reporters: list + json (reports/results.json) + html (reports/html, open never)
+  - use: baseURL `process.env.BMS_BASE_URL || "https://in.bookmyshow.com"`, the
+    Cloudflare settings from section 4, `screenshot: "on"`,
+    `trace: "retain-on-failure"`, viewport 1366x768
+  - Include a comment block recording the measured Cloudflare matrix, so nobody
+    deletes the `headless` line and silently reintroduces the block.
+
+package.json scripts:
+    bddgen       -> npx bddgen
+    flows:check  -> node scripts/check-flow-drift.mjs
+    flows:bless  -> node scripts/check-flow-drift.mjs --write
+    test         -> npm run flows:check && npx bddgen && npx playwright test
+    test:headed  -> npx bddgen && npx playwright test --headed
+    test:list    -> npx bddgen && npx playwright test --list --reporter=null
+    test:smoke   -> npx bddgen && npx playwright test --grep @smoke
+    test:movies  -> npx bddgen && npx playwright test --grep @movies
+    report       -> npx playwright show-report reports/html
+  (add a `test:<service>` --grep script per service as services are added)
+
+tsconfig.json: target ES2022, module ESNext, moduleResolution Bundler, strict,
+esModuleInterop, skipLibCheck, resolveJsonModule, types ["node"]; include
+`src/**/*.ts`, `playwright.config.ts`, `.features-gen/**/*.ts`.
+
+.vscode/settings.json: step definitions do NOT live next to the .feature files, so
+point both Cucumber extensions at them explicitly - `cucumber.features` =
+["features/*.feature"], `cucumber.glue` = ["src/services/**/*.steps.ts"], and the
+`cucumberautocomplete.*` equivalents (`steps`, `syncfeatures`,
+`strictGherkinCompletion: false`, `smartSnippets: true`, `stepsInvariants: true`).
+Set `files.eol` to "\n".
+
+.gitignore: node_modules/, .features-gen/, test-results/, reports/html/,
+reports/results.json, .chrome-profile/, .playwright-mcp/
+
+--------------------------------------------------------------------------------
+12. EXECUTE AND REPORT
+--------------------------------------------------------------------------------
+
+After generating the code, actually RUN it. Use the Playwright MCP tools to walk each
+flow step by step against the live site first (that is also how you ground the
+selectors), then run the real suite with `npm run test:smoke`, `npm run test:movies`
+and the Stream tag until green.
+
+Report results clearly: every step, pass or fail, with the ACTUAL error text for
+failures - never a summarised or assumed outcome. Take screenshots at key points
+(landing, city selected, movies listing, language filter applied, movie details,
+format popup, showtimes URL; Stream tab, collection found, title page) and save them
+under `reports/screenshots/` with ordered names like `01-landing.png`.
+
+If a run is Cloudflare-blocked, say so explicitly and re-run after a pause - do not
+start changing selectors to work around it.
+
+--------------------------------------------------------------------------------
+13. README.md
+--------------------------------------------------------------------------------
+
+Write a README covering: layout (with the flow<->feature naming rule); the npm
+scripts and what `bddgen` actually does; the measured Cloudflare matrix and the
+two-response handling; the FLOW FILE FORMAT table and the one-column placeholder rule;
+the cost of scenarios (Background re-runs per Examples row, workers: 1); the
+booking-funnel boundary, the two traps between "Book tickets" and the popup, and why
+the URL is the proof; how flows and features are kept in sync (the two-hop diagram,
+`/update-feature`, `flows:check`, `flows:bless`, why step counts are not the signal);
+the one-shared-registry rule with the `common.steps.ts` example and the glob warning;
+how to add a new service; and a "Selector policy" section listing EVERY trap from
+sections 3, 6 and 7 with the handling applied.
+
+Document any environment workaround the machine actually needed. (Example from the
+original build: `npm install` failed behind a corporate TLS proxy with
+`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, so `node_modules/` was made a directory junction
+to another local project that already had the exact versions; the permanent fix is
+pointing npm at the corporate CA bundle via `NODE_EXTRA_CA_CERTS` and running a real
+install. Do this only if you hit the same failure.)
+
+--------------------------------------------------------------------------------
+14. ADDING A NEW SERVICE LATER (Events, Plays, Sports, Activities)
+--------------------------------------------------------------------------------
+
+  1. Write `flows/<service>.md` starting with a `Service Type:` line.
+  2. Add `src/services/<service>/<service>.page.ts` extending `BasePage`.
+  3. Add `src/services/<service>/<service>.steps.ts` importing `test` from
+     `src/support/fixtures.ts` - and do NOT redefine the shared navigation/city
+     steps; reuse the ones in `src/support/common.steps.ts`.
+  4. Register the POM as a fixture in `src/support/fixtures.ts`.
+  5. Write `features/<service>.feature`, tagged `@<service>` with `@smoke` on one
+     cheap happy path.
+  6. `npm run flows:bless`, then `npm run flows:check`.
+
+Nothing else changes - the config globs pick the new files up automatically.
+
+================================================================================
+END OF PROMPT
+================================================================================

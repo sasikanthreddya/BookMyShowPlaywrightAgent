@@ -1,0 +1,10 @@
+node_modules/
+.features-gen/
+# Saved BookMyShow session (storageState). Contains live auth cookies for a
+# real account - never commit it.
+.auth/
+test-results/
+reports/html/
+reports/results.json
+.chrome-profile/
+.playwright-mcp/
