@@ -141,12 +141,22 @@ rather than `npm ci`; adding a lockfile would make CI builds reproducible.
 *Pipeline* (or Multibranch Pipeline) job pointing at this repo with "Pipeline
 script from SCM"; the file is picked up by name.
 
-| Stage | When | What |
+| Parameter | Choices | Effect |
 | --- | --- | --- |
-| Install, Flow drift, Generate specs | every build | `npm install`, `npm run flows:check`, `npx bddgen` |
-| Smoke | `SUITE=smoke` (default) | `@smoke`, anonymous project, no credentials |
-| Anonymous suite | `SUITE=anonymous` | everything except `@account`, optional `GREP` tag filter |
-| Full suite | `SUITE=full` or the 01:30 UTC timer | everything, needs the `bms-google` credential |
+| `SUITE` | `smoke` (default), `regression`, `full` | smoke = `@smoke` only; regression = every scenario except `@account`; full = regression plus the signed-in `@account` scenarios. The 01:30 UTC timer runs full. |
+| `SERVICE` | `all`, `movies`, `events`, `plays`, `activities`, `sports`, `stream` | narrows any suite to one service |
+| `TAG` | `all`, `@filters`, `@booking`, `@city`, `@search`, `@details`, `@auth`, `@cinemas`, `@venues`, `@browse`, `@sporttype` | narrows regression/full to one kind of scenario; ANDed with `SERVICE`; ignored for smoke |
+| `GREP` | free text | raw Playwright `--grep` regex for anything the dropdowns cannot express, e.g. `@movies|@events`; overrides `SERVICE` and `TAG` |
+| `INSTALL_CHROME` | tick once | `npx playwright install chrome` on a fresh agent |
+
+Every build runs `npm install`, `npm run flows:check` and `npx bddgen` first. Smoke and
+regression use `--project=anonymous` and need no credentials; full runs all three Playwright
+projects and needs the `bms-google` credential. Two tags are combined into one regex with
+lookaheads, `(?=.*@movies)(?=.*@filters)`, because Playwright's `--grep` takes a single
+pattern. A `SERVICE`+`TAG` pair that matches no scenario (say sports + `@cinemas`) fails the
+build with Playwright's "no tests found" rather than passing on zero tests.
+
+Locally the same three suites are `npm run test:smoke`, `npm run test:regression` and `npm test`.
 
 What the pipeline expects from the agent, because it deliberately installs none of it:
 

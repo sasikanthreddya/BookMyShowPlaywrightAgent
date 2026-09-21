@@ -51,6 +51,7 @@ and Activities (Book Now goes to a date page). Movies and Stream extend `BasePag
 ```bash
 npm test                 # drift check + bddgen + run everything
 npm run test:smoke       # fast check, one happy path per service
+npm run test:regression  # everything that runs logged out (all scenarios except @account)
 npm run test:movies      # one service (also test:stream, test:events, test:plays, test:sports, test:activities)
 npm run test:list        # list scenarios, no run
 npm run flows:check      # are features in sync with flows?
@@ -69,7 +70,8 @@ holds live cookies and credentials, so **never commit it**. Everything else runs
 purpose, because some scenarios assert logged-out behaviour.
 
 **CI.** GitHub Actions (`.github/workflows/e2e.yml`) and Jenkins (`Jenkinsfile`) run the same
-thing: drift check, then `@smoke` by default, full suite nightly. For Jenkins, point a Pipeline job
+thing: drift check, then the tests. In Jenkins pick `SUITE` = smoke, regression or full, and narrow
+with the `SERVICE` and `TAG` dropdowns (they combine, e.g. movies + `@filters`). For Jenkins, point a Pipeline job
 at the repo, make sure the agent has Node 20, real Chrome and a display (xvfb on Linux; on Windows
 run the agent from a logged-in desktop, not as a service), and add a *Username with password*
 credential with id `bms-google` if you want `SUITE=full`. Details: README "Running in CI".

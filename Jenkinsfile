@@ -1,10 +1,18 @@
 // Jenkins pipeline for the BookMyShow Playwright BDD suite.
 //
 // Mirrors .github/workflows/e2e.yml: a browserless flow-drift gate first, then
-// either the @smoke slice (default, no credentials) or the full suite (nightly
-// timer, or SUITE=full by hand). Read "Running in CI" in README.md before
-// changing anything here - every odd-looking choice below is measured against
-// the live site, not a style preference.
+// the tests. Three suites, narrowed by two dropdowns:
+//   SUITE=smoke       @smoke only, anonymous project, no credentials (default)
+//   SUITE=regression  everything except @account, anonymous project
+//   SUITE=full        regression + the signed-in @account scenarios (nightly
+//                     timer, or by hand); needs the bms-google credential
+//   SERVICE / TAG     optional AND-filters (e.g. movies + @filters). smoke
+//                     ignores TAG because it IS a tag. GREP is a raw
+//                     Playwright --grep regex for anything the dropdowns
+//                     cannot say, and overrides both.
+// Read "Running in CI" in README.md before changing anything here - every
+// odd-looking choice below is measured against the live site, not a style
+// preference.
 //
 // Agent requirements (the pipeline does NOT install these):
 //   * Node 20+ on PATH.
@@ -40,8 +48,20 @@ def effectiveSuite() {
   return timer ? 'full' : params.SUITE
 }
 
+// Build the --grep regex from the dropdowns. Playwright takes ONE regex, so
+// two tags are ANDed with lookaheads: (?=.*@movies)(?=.*@filters). Parameters
+// can be null on the first build after this file adds one, hence the ?: falls.
 def grepArg() {
-  return params.GREP?.trim() ? "--grep ${params.GREP.trim()}" : ''
+  def raw = (params.GREP ?: '').trim()
+  if (raw) { return "--grep \"${raw}\"" }
+  def parts = []
+  def service = (params.SERVICE ?: 'all')
+  def tag = effectiveSuite() == 'smoke' ? '@smoke' : (params.TAG ?: 'all')
+  if (service != 'all') { parts << "@${service}" }
+  if (tag != 'all')     { parts << tag }
+  if (parts.isEmpty()) { return '' }
+  if (parts.size() == 1) { return "--grep \"${parts[0]}\"" }
+  return "--grep \"" + parts.collect { "(?=.*${it})" }.join('') + "\""
 }
 
 pipeline {
@@ -56,10 +76,14 @@ pipeline {
   }
 
   parameters {
-    choice(name: 'SUITE', choices: ['smoke', 'anonymous', 'full'],
-      description: 'smoke: one happy path per service, no login. anonymous: everything except @account. full: everything, needs the bms-google credential.')
+    choice(name: 'SUITE', choices: ['smoke', 'regression', 'full'],
+      description: 'smoke: one happy path per service, no login. regression: every scenario except the signed-in ones. full: regression plus the signed-in @account scenarios - needs the bms-google credential.')
+    choice(name: 'SERVICE', choices: ['all', 'movies', 'events', 'plays', 'activities', 'sports', 'stream'],
+      description: 'Limit the run to one service. Applies to every SUITE.')
+    choice(name: 'TAG', choices: ['all', '@filters', '@booking', '@city', '@search', '@details', '@auth', '@cinemas', '@venues', '@browse', '@sporttype'],
+      description: 'Limit regression/full to one kind of scenario. ANDed with SERVICE. Ignored for smoke. (@account is not listed: SUITE=full is how the signed-in scenarios run.)')
     string(name: 'GREP', defaultValue: '',
-      description: 'Optional tag filter for anonymous/full, e.g. @movies or @events. Ignored for smoke.')
+      description: 'Advanced: raw Playwright --grep regex, e.g. @movies|@events. Overrides SERVICE and TAG.')
     booleanParam(name: 'INSTALL_CHROME', defaultValue: false,
       description: 'Run `npx playwright install --with-deps chrome` first. Needs root/admin; only for a fresh agent.')
   }
@@ -108,27 +132,31 @@ pipeline {
       steps { script { shell 'npx bddgen' } }
     }
 
-    stage('Smoke') {
-      when { expression { effectiveSuite() == 'smoke' } }
+    // smoke and regression both run logged out; smoke is regression with TAG
+    // forced to @smoke (see grepArg).
+    stage('Tests (anonymous)') {
+      when { expression { effectiveSuite() != 'full' } }
       steps {
-        script { shell headed('npx playwright test --project=anonymous --grep @smoke') }
+        script {
+          echo "SUITE=${effectiveSuite()} SERVICE=${params.SERVICE ?: 'all'} TAG=${params.TAG ?: 'all'} -> ${grepArg() ?: '(no filter)'}"
+          shell headed("npx playwright test --project=anonymous ${grepArg()}")
+        }
       }
     }
 
-    stage('Anonymous suite') {
-      when { expression { effectiveSuite() == 'anonymous' } }
-      steps {
-        script { shell headed("npx playwright test --project=anonymous ${grepArg()}") }
-      }
-    }
-
-    stage('Full suite') {
+    // No --project: runs setup (sign in), anonymous and account. Playwright
+    // exits non-zero if a filter matches nothing, so a too-narrow SERVICE+TAG
+    // fails loudly rather than passing on zero tests.
+    stage('Tests (full, signed in)') {
       when { expression { effectiveSuite() == 'full' } }
       steps {
         withCredentials([usernamePassword(credentialsId: 'bms-google',
                                           usernameVariable: 'BMS_GOOGLE_EMAIL',
                                           passwordVariable: 'BMS_GOOGLE_PASSWORD')]) {
-          script { shell headed("npx playwright test ${grepArg()}") }
+          script {
+            echo "SUITE=full SERVICE=${params.SERVICE ?: 'all'} TAG=${params.TAG ?: 'all'} -> ${grepArg() ?: '(no filter)'}"
+            shell headed("npx playwright test ${grepArg()}")
+          }
         }
       }
     }

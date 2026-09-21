@@ -12,6 +12,7 @@
     "test:headed": "npx bddgen && npx playwright test --headed",
     "test:list": "npx bddgen && npx playwright test --list --reporter=null",
     "test:smoke": "npx bddgen && npx playwright test --grep @smoke",
+    "test:regression": "npx bddgen && npx playwright test --project=anonymous",
     "test:movies": "npx bddgen && npx playwright test --grep @movies",
     "test:events": "npx bddgen && npx playwright test --grep @events",
     "test:plays": "npx bddgen && npx playwright test --grep @plays",
