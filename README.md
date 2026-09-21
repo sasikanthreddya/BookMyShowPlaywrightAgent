@@ -172,7 +172,7 @@ Results land in three places: the `junit` step reads `reports/junit.xml` (a
 `junit` reporter was added to `playwright.config.ts` for this, and only this),
 `reports/` and `test-results/` are archived as build artifacts, and if the HTML
 Publisher plugin is installed the Playwright report is linked from the build
-page. Without that plugin the pipeline says so and moves on.
+page. Without that plugin, or with a broken one, the pipeline says so and moves on.
 
 ## Flow file format
 

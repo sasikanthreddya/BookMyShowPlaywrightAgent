@@ -140,7 +140,7 @@ pipeline {
       junit testResults: 'reports/junit.xml', allowEmptyResults: true
       archiveArtifacts artifacts: 'reports/**, test-results/**', allowEmptyArchive: true, fingerprint: false
       script {
-        // HTML Publisher plugin is optional; skip quietly if it is not installed.
+        // HTML Publisher plugin is optional; skip quietly if it is missing or broken.
         try {
           publishHTML(target: [
             reportName: 'Playwright report',
@@ -150,8 +150,12 @@ pipeline {
             alwaysLinkToLastBuild: true,
             allowMissing: true,
           ])
-        } catch (NoSuchMethodError | groovy.lang.MissingMethodException e) {
-          echo 'HTML Publisher plugin not installed - open reports/html/index.html from the archived artifacts instead.'
+        } catch (Throwable e) {
+          // Missing plugin surfaces as NoSuchMethodError; a plugin whose own
+          // dependencies are broken (seen: htmlpublisher 427.1 on Jenkins 2.582,
+          // NoClassDefFoundError for commons-lang) surfaces as
+          // IllegalArgumentException. Neither should fail a green test run.
+          echo "HTML report not published (${e}). Open reports/html/index.html from the archived artifacts instead."
         }
       }
     }
