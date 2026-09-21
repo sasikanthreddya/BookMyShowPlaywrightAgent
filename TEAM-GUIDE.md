@@ -68,6 +68,12 @@ automatically when one is needed and reuses it for about 12 hours. Credentials c
 holds live cookies and credentials, so **never commit it**. Everything else runs logged out on
 purpose, because some scenarios assert logged-out behaviour.
 
+**CI.** GitHub Actions (`.github/workflows/e2e.yml`) and Jenkins (`Jenkinsfile`) run the same
+thing: drift check, then `@smoke` by default, full suite nightly. For Jenkins, point a Pipeline job
+at the repo, make sure the agent has Node 20, real Chrome and a display (xvfb on Linux; on Windows
+run the agent from a logged-in desktop, not as a service), and add a *Username with password*
+credential with id `bms-google` if you want `SUITE=full`. Details: README "Running in CI".
+
 ## 4. Ten rules everyone follows
 
 1. **Runs are headed.** Cloudflare blocks headless. A visible Chrome window is normal. Never delete the `headless` or `channel` lines in `playwright.config.ts`.

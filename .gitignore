@@ -8,3 +8,4 @@ reports/html/
 reports/results.json
 .chrome-profile/
 .playwright-mcp/
+reports/junit.xml

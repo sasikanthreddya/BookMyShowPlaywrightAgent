@@ -57,6 +57,8 @@ export default defineConfig({
   reporter: [
     ["list"],
     ["json", { outputFile: "reports/results.json" }],
+    // Read by the Jenkins `junit` step (see Jenkinsfile); harmless elsewhere.
+    ["junit", { outputFile: "reports/junit.xml" }],
     ["html", { open: "never", outputFolder: "reports/html" }],
   ],
   use: {

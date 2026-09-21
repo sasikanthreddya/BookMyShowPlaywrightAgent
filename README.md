@@ -23,6 +23,7 @@ src/services/<service>/<service>.page.ts    one POM per service (Movies and Stre
 src/services/<service>/<service>.steps.ts   one step-definition file per service
 scripts/check-flow-drift.mjs           fails the build when a feature lags its flow
 .github/workflows/e2e.yml              CI: flow-drift gate, @smoke on PR, full suite nightly
+Jenkinsfile                            Same pipeline for Jenkins: SUITE=smoke|anonymous|full, nightly full
 reports/screenshots/                   execution evidence
 
 A feature file must be named after its flow (flows/X.md <-> features/X.feature); that pairing
@@ -133,6 +134,45 @@ the first step, not as a selector bug — and the fix is a **self-hosted runner*
 on a normal network, which needs no change to the workflow beyond `runs-on`.
 There is also no `package-lock.json` in this repo, so CI uses `npm install`
 rather than `npm ci`; adding a lockfile would make CI builds reproducible.
+
+### Jenkins
+
+`Jenkinsfile` at the repo root is the same pipeline for Jenkins. Create a
+*Pipeline* (or Multibranch Pipeline) job pointing at this repo with "Pipeline
+script from SCM"; the file is picked up by name.
+
+| Stage | When | What |
+| --- | --- | --- |
+| Install, Flow drift, Generate specs | every build | `npm install`, `npm run flows:check`, `npx bddgen` |
+| Smoke | `SUITE=smoke` (default) | `@smoke`, anonymous project, no credentials |
+| Anonymous suite | `SUITE=anonymous` | everything except `@account`, optional `GREP` tag filter |
+| Full suite | `SUITE=full` or the 01:30 UTC timer | everything, needs the `bms-google` credential |
+
+What the pipeline expects from the agent, because it deliberately installs none of it:
+
+- **Node 20+ and real Google Chrome on PATH.** Tick `INSTALL_CHROME` once on a
+  fresh agent to have Playwright install Chrome (needs root/admin).
+- **A display.** On Linux the browser stages are wrapped in `xvfb-run -a`, so
+  `xvfb` must be installed. On Windows there is no xvfb: run the agent from a
+  logged-in desktop session (`java -jar agent.jar ...` in a terminal). A Jenkins
+  Windows *service* runs in session 0 with no desktop, and Chrome launched there
+  is the closest thing to headless, which Cloudflare blocks. If `assertNotBlocked()`
+  fires on the first step of every scenario, this is the first thing to check.
+- **Credentials for `SUITE=full`:** a *Username with password* credential with
+  id `bms-google` (username = Google email, password = Google password). The
+  pipeline binds it to `BMS_GOOGLE_EMAIL` / `BMS_GOOGLE_PASSWORD` for the run
+  only. `smoke` and `anonymous` never touch it, so a job with no credential
+  configured still works for those.
+
+The pipeline sets `BMS_AUTH_MAX_AGE_HOURS=0` and `BMS_AUTH_WAIT_MINUTES=0` for
+the same reasons as the GitHub workflow, and `disableConcurrentBuilds` aborts a
+superseded build rather than queueing it, for the same reason `concurrency` does.
+
+Results land in three places: the `junit` step reads `reports/junit.xml` (a
+`junit` reporter was added to `playwright.config.ts` for this, and only this),
+`reports/` and `test-results/` are archived as build artifacts, and if the HTML
+Publisher plugin is installed the Playwright report is linked from the build
+page. Without that plugin the pipeline says so and moves on.
 
 ## Flow file format
 
