@@ -22,7 +22,9 @@
 //     Only the "setup" project reads it; @account scenarios then reuse the
 //     session it saves under .auth/, which is gitignored and workspace-local.
 
-def run(String cmd) {
+// Named `shell`, not `run`: `run` is an existing pipeline step name and the
+// declarative linter rejects a bare `run '...'` in a steps block.
+def shell(String cmd) {
   if (isUnix()) { sh cmd } else { bat cmd }
 }
 
@@ -80,41 +82,43 @@ pipeline {
   stages {
     stage('Install') {
       steps {
-        run 'node --version'
-        run 'npm install'
+        script {
+          shell 'node --version'
+          shell 'npm install'
+        }
       }
     }
 
     // Browserless and quick. Catches the failure the suite cannot: a feature
     // that silently fell behind its flow. Runs before any browser is opened.
     stage('Flow drift') {
-      steps { run 'npm run flows:check' }
+      steps { script { shell 'npm run flows:check' } }
     }
 
     stage('Install Chrome') {
       when { expression { params.INSTALL_CHROME } }
       steps {
         script {
-          run(isUnix() ? 'npx playwright install --with-deps chrome' : 'npx playwright install chrome')
+          shell(isUnix() ? 'npx playwright install --with-deps chrome' : 'npx playwright install chrome')
         }
       }
     }
 
     stage('Generate specs') {
-      steps { run 'npx bddgen' }
+      steps { script { shell 'npx bddgen' } }
     }
 
     stage('Smoke') {
       when { expression { effectiveSuite() == 'smoke' } }
       steps {
-        script { run headed('npx playwright test --project=anonymous --grep @smoke') }
+        script { shell headed('npx playwright test --project=anonymous --grep @smoke') }
       }
     }
 
     stage('Anonymous suite') {
       when { expression { effectiveSuite() == 'anonymous' } }
       steps {
-        script { run headed("npx playwright test --project=anonymous ${grepArg()}") }
+        script { shell headed("npx playwright test --project=anonymous ${grepArg()}") }
       }
     }
 
@@ -124,7 +128,7 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'bms-google',
                                           usernameVariable: 'BMS_GOOGLE_EMAIL',
                                           passwordVariable: 'BMS_GOOGLE_PASSWORD')]) {
-          script { run headed("npx playwright test ${grepArg()}") }
+          script { shell headed("npx playwright test ${grepArg()}") }
         }
       }
     }
