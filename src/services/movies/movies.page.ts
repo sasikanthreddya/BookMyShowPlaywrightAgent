@@ -409,10 +409,15 @@ export class MoviesPage extends BasePage {
    * whitespace-tolerant form. The id is the cleanest handle, and an id that
    * starts with a digit has to be matched as an attribute, not a CSS `#id`.
    *
-   * The active date is also the URL's own path segment
-   * (/buytickets/ET<id>/20260921), so "the next date" is computed from the
-   * URL rather than by position — clicking the second chip would be wrong on
-   * a day when the first chip is not today.
+   * The active date is NOT reliably the URL's path segment. Measured
+   * 2026-09-22 on a pre-release title ("The Paradise", opening 24 Sep with
+   * advance booking open): the URL still said /20260922 while the strip ran
+   * THU 24 SEP .. THU 01 OCT and every cinema link pointed at 20260924. The
+   * site accepts any date in the URL and simply renders the first date that
+   * has shows. So "the next date" is the SECOND chip in the strip, and the
+   * active date is the first — both read from the strip, never computed from
+   * the URL or the calendar. "Whichever movie shows first" is often a big new
+   * release in exactly this state, which is how this surfaced in CI.
    */
   private nextShowtimeDate = "";
 
@@ -420,27 +425,31 @@ export class MoviesPage extends BasePage {
     return this.page.locator(`[id="${code}"]`);
   }
 
-  /** The 8-digit date code in the current showtimes URL. */
-  private showtimesDateFromUrl(): string {
-    const m = /\/buytickets\/ET\d+\/(\d{8})/i.exec(this.page.url());
-    if (!m) throw new Error(`Not on a showtimes page, so there is no date to move from (url: ${this.page.url()}).`);
-    return m[1];
+  /** Every chip in the strip, in display order, as 8-digit date codes. */
+  private async showtimeDateCodes(): Promise<string[]> {
+    // Date chips are the only elements on the page whose id is a bare
+    // 8-digit date; filter in the browser so one round trip returns them all.
+    return this.page
+      .locator("div[id]")
+      .evaluateAll((els) => els.map((e) => e.id).filter((id) => /^[0-9]{8}$/.test(id)));
   }
 
   async pickNextShowtimeDate(): Promise<void> {
-    const current = this.showtimesDateFromUrl();
-    const d = new Date(Date.UTC(+current.slice(0, 4), +current.slice(4, 6) - 1, +current.slice(6, 8)));
-    d.setUTCDate(d.getUTCDate() + 1);
-    const next =
-      `${d.getUTCFullYear()}` +
-      `${String(d.getUTCMonth() + 1).padStart(2, "0")}` +
-      `${String(d.getUTCDate()).padStart(2, "0")}`;
+    // The strip is client-rendered after the showtimes grid; wait for at
+    // least two chips rather than reading an empty list once.
+    await expect
+      .poll(async () => (await this.showtimeDateCodes()).length, {
+        message: `The showtimes page shows fewer than two date chips, so there is no next date to pick (url: ${this.page.url()}).`,
+        timeout: 20_000,
+      })
+      .toBeGreaterThanOrEqual(2);
+
+    const [active, next] = await this.showtimeDateCodes();
     this.nextShowtimeDate = next;
 
     await expect(
       this.dateChip(next),
-      `The showtimes page offers no chip for ${next} (url: ${this.page.url()}). The strip ` +
-        `shows a week from the active date, so a missing next day means the strip's shape changed.`,
+      `The next date chip ${next} (after active ${active}) is not visible (url: ${this.page.url()}).`,
     ).toBeVisible();
     await this.dateChip(next).click();
     await this.page.waitForURL(new RegExp(`/buytickets/ET\\d+/${next}`), { timeout: 30_000 });

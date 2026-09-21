@@ -823,9 +823,15 @@ URL assertions. Traps found on the real page and handled in code:
   `/buytickets/` are `div`s whose only stable handle is an `id` equal to the
   date code (`div#20260922` reads "TUE 22 SEP" split across child nodes, so
   even a text match needs the whitespace-tolerant `\s*` form). An id that starts
-  with a digit is matched as `[id="20260922"]`, not `#20260922`. The active
-  date is also the URL's own path segment, so "the next date" is computed from
-  the URL and proven by it, never by chip position.
+  with a digit is matched as `[id="20260922"]`, not `#20260922`. The URL's
+  date segment is **not** a reliable active date: measured 2026-09-22 on a
+  pre-release title with advance booking open, the URL said `/20260922` while
+  the strip ran 24 Sep to 1 Oct and every cinema link pointed at 20260924 — the
+  site accepts any date and renders the first one with shows. So the strip is
+  read as a list of 8-digit ids: the first is the active date, the second is
+  "the next date", and the move is proven by the URL ending in that second id.
+  This bit the nightly run once, because "whichever movie shows first" is often
+  a big release in exactly that state.
 - **Cinema rows on the showtimes page link to the cinema with a text-less
   anchor.** `a[href*="/cinemas/"][href*="/buytickets/"]` is the only selector
   that isolates them from the showtime buttons. The cinema page itself has **no
